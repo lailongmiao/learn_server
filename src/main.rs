@@ -1,30 +1,37 @@
-mod models;
-mod db;
-mod handlers;
+use axum::{routing::get,Router,extract::State,Json};
+use serde::{Deserialize,Serialize};
+use sqlx::postgres::PgPool;
 
-use axum::{
-    routing::get,
-    Router,
-};
-use tower_http::cors::CorsLayer;
-use dotenv::dotenv;
+#[derive(Serialize, Deserialize)]
+struct User {
+    id: i32,
+    username: String,
+    email: String,
+}
+
 
 #[tokio::main]
 async fn main() {
-    dotenv().ok();
-    let pool = db::create_pool()
-        .await
-        .expect("Failed to create pool");
-
+    let pool = PgPool::connect("postgres://postgres:zhx2004101@localhost:5432/axum_demo")
+    .await
+    .unwrap();
     let app = Router::new()
-        .route("/api/users", get(handlers::get_users))
-        .layer(CorsLayer::permissive())
-        .with_state(pool);
-
+    .route("/api/users",get(get_users))
+    .with_state(pool);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await
-        .unwrap();
-    println!("Server running on http://127.0.0.1:3000");
-    
-    axum::serve(listener, app).await.unwrap();
+    .await
+    .unwrap();
+    axum::serve(listener,app).await.unwrap();
+}
+
+async fn get_users(State(pool):State<PgPool>)-> Json<Vec<User>>
+{
+    let users = sqlx::query_as!(
+        User,
+        "SELECT id, username, email FROM users"
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    Json(users)
 }
