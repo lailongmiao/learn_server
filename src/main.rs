@@ -1,6 +1,7 @@
 use axum::{extract::State, routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Serialize, Deserialize)]
 struct User {
@@ -14,9 +15,17 @@ async fn main() {
     let pool = PgPool::connect("postgres://postgres:zhx2004101@localhost:5432/axum_demo")
         .await
         .unwrap();
+        
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+        
     let app = Router::new()
         .route("/api/users", get(get_users))
-        .with_state(pool);
+        .with_state(pool)
+        .layer(cors);
+        
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
         .await
         .unwrap();
