@@ -30,7 +30,7 @@ async fn main() {
     let app = Router::new()
         .route("/api/users", get(get_users))
         .route("/api/teams",get(get_teams))
-        .route("/api/get_user_info/{team_id}",get(get_team_info))
+        .route("/api/get_user_info/{team_id}",get(get_user_info))
         .with_state(pool)
         .layer(cors);
         
@@ -57,7 +57,7 @@ async fn get_teams(State(pool):State<PgPool>) -> Json<Vec<Teams>>
     Json(teams)
 }
 
-async fn get_team_info(State(pool):State<PgPool>,Path(team_id):Path<i32>) ->Json<Vec<User>>
+async fn get_user_info(State(pool):State<PgPool>,Path(team_id):Path<i32>) ->Json<Vec<User>>
 {
     let users=sqlx::query_as!(User,"SELECT id,username,email from users where team_id=$1",team_id)
     .fetch_all(&pool)
