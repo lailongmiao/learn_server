@@ -8,8 +8,8 @@ struct User {
     id: i32,
     username: String,
     email: String,
-    team_id: i32,
-    group_id: i32,
+    team_id: Option<i32>,
+    group_id: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -22,6 +22,7 @@ struct Team{
 struct Group{
     id: i32,
     name: String,
+    team_id:i32,
 }
 
 #[tokio::main]
@@ -40,7 +41,7 @@ async fn main() {
         .route("/api/teams",get(get_teams))
         .route("/api/teams/{team_id}/users",get(get_users_by_team_id_path))
         .route("/api/groups",get(get_groups))
-        .route("/api/groups/{group_id}/users",get(get_users_by_group_id))
+        .route("/api/teams/{team_id}/groups/{group_id}/users",get(get_users_by_team_group))
         .with_state(pool)
         .layer(cors);
         
@@ -78,18 +79,29 @@ async fn get_users_by_team_id_path(State(pool):State<PgPool>,Path(team_id):Path<
 
 async fn get_groups(State(pool):State<PgPool>) ->Json<Vec<Group>>
 {
-    let groups=sqlx::query_as!(Group,"SELECT id,name from groups")
+    let groups=sqlx::query_as!(Group,"SELECT id,name,team_id from groups")
     .fetch_all(&pool)
     .await
     .unwrap();
     Json(groups)
 }
 
-async fn get_users_by_group_id(State(pool):State<PgPool>,Path(group_id):Path<i32>) ->Json<Vec<User>>
+async fn get_users_by_team_group(State(pool): State<PgPool>,Path((team_id, group_id)): Path<(i32, i32)>) -> Json<Vec<User>> 
 {
-    let users=sqlx::query_as!(User,"SELECT id,username,email,team_id,group_id from users where group_id=$1",group_id)
+    let is_group = sqlx::query!("SELECT id FROM groups WHERE id = $1 AND team_id = $2", group_id, team_id)
+    .fetch_optional(&pool)
+    .await
+    .unwrap()
+    .is_some();
+    
+    if !is_group {
+        return Json(Vec::new());
+    }
+    
+    let users = sqlx::query_as!(User,"SELECT id, username, email, team_id, group_id FROM users WHERE group_id = $1",group_id)
     .fetch_all(&pool)
     .await
     .unwrap();
+    
     Json(users)
 }
