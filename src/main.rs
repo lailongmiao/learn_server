@@ -41,6 +41,7 @@ async fn main() {
         .route("/api/teams",get(get_teams))
         .route("/api/teams/{team_id}/users",get(get_users_by_team_id_path))
         .route("/api/groups",get(get_groups))
+        .route("/api/teams/{team_id}/groups",get(get_groups_by_team_id))
         .route("/api/teams/{team_id}/groups/{group_id}/users",get(get_users_by_team_group))
         .with_state(pool)
         .layer(cors);
@@ -83,6 +84,14 @@ async fn get_groups(State(pool):State<PgPool>) ->Json<Vec<Group>>
     .fetch_all(&pool)
     .await
     .unwrap();
+    Json(groups)
+}
+
+async fn get_groups_by_team_id(State(pool):State<PgPool>,Path(team_id):Path<i32>) ->Json<Vec<Group>>
+{
+    let groups=sqlx::query_as!(Group,"SELECT id,name,team_id from groups where team_id=$1",team_id)
+    .fetch_all(&pool)
+    .await.unwrap();
     Json(groups)
 }
 
