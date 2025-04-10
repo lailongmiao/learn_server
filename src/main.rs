@@ -1,3 +1,4 @@
+use argon2::Config;
 use axum::{
     extract::{Path, State},
     routing::{get, post},
@@ -48,6 +49,8 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = PgPool::connect(&database_url).await.unwrap();
+
+    hash_password(State(pool.clone())).await;
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -210,5 +213,39 @@ WHERE username=$1 AND password=$2
     match search_user {
         Some(user) => Json(user),
         None => panic!("用户不存在"),
+    }
+}
+
+async fn hash_password(State(pool): State<PgPool>) {
+    let users = sqlx::query_as!(
+        User,
+        r#"
+SELECT * 
+FROM users 
+        "#
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let config = Config::default();
+    for user in users {
+        if user.password.contains("$argon2id$") {
+            continue;
+        }
+        let plian_password = user.password.as_bytes();
+        let salt = "salt_goes_here".as_bytes();
+        let hash_password = argon2::hash_encoded(plian_password, &salt, &config).unwrap();
+        let _ = sqlx::query! {
+            r#"
+UPDATE users 
+SET password = $1
+WHERE id = $2
+            "#,
+            hash_password,
+            user.id
+        }
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 }
