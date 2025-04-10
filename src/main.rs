@@ -45,9 +45,9 @@ struct LoginInfo {
 
 #[tokio::main]
 async fn main() {
-    let pool = PgPool::connect("postgres://postgres:postgres@localhost:5432/axum_demo")
-        .await
-        .unwrap();
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+    let pool = PgPool::connect(&database_url).await.unwrap();
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -73,18 +73,32 @@ async fn main() {
 }
 
 async fn get_users(State(pool): State<PgPool>) -> Json<Vec<User>> {
-    let users = sqlx::query_as!(User, "SELECT * FROM users")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let users = sqlx::query_as!(
+        User,
+        r#"
+SELECT * 
+FROM users 
+ORDER BY id
+        "#
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     Json(users)
 }
 
 async fn get_teams(State(pool): State<PgPool>) -> Json<Vec<Team>> {
-    let teams = sqlx::query_as!(Team, "SELECT * FROM teams")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let teams = sqlx::query_as!(
+        Team,
+        r#"
+SELECT * 
+FROM teams 
+ORDER BY id
+        "#
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     Json(teams)
 }
 
@@ -92,18 +106,33 @@ async fn get_users_by_team_id_path(
     State(pool): State<PgPool>,
     Path(team_id): Path<i32>,
 ) -> Json<Vec<User>> {
-    let users = sqlx::query_as!(User, "SELECT * FROM users where team_id=$1", team_id)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let users = sqlx::query_as!(
+        User,
+        r#"
+SELECT * 
+FROM users 
+WHERE team_id = $1
+        "#,
+        team_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     Json(users)
 }
 
 async fn get_groups(State(pool): State<PgPool>) -> Json<Vec<Group>> {
-    let groups = sqlx::query_as!(Group, "SELECT * FROM groups")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let groups = sqlx::query_as!(
+        Group,
+        r#"
+SELECT * 
+FROM groups 
+ORDER BY id
+        "#
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     Json(groups)
 }
 
@@ -111,10 +140,18 @@ async fn get_groups_by_team_id(
     State(pool): State<PgPool>,
     Path(team_id): Path<i32>,
 ) -> Json<Vec<Group>> {
-    let groups = sqlx::query_as!(Group, "SELECT * FROM groups where team_id=$1", team_id)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let groups = sqlx::query_as!(
+        Group,
+        r#"
+SELECT * 
+FROM groups 
+WHERE team_id = $1
+        "#,
+        team_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     Json(groups)
 }
 
@@ -122,29 +159,47 @@ async fn get_users_by_group_id(
     State(pool): State<PgPool>,
     Path(group_id): Path<i32>,
 ) -> Json<Vec<User>> {
-    let users = sqlx::query_as!(User, "SELECT * FROM users WHERE group_id = $1", group_id)
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+    let users = sqlx::query_as!(
+        User,
+        r#"
+SELECT * 
+FROM users
+WHERE group_id = $1
+        "#,
+        group_id
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
 
     Json(users)
 }
 
-async fn register_user(
-    State(pool): State<PgPool>,
-    Json(register_info): Json<RegisterInfo>,
-) -> Json<User> {
-    let new_user=sqlx::query_as!(User,"INSERT INTO users (username,email,password,team_id,group_id) VALUES ($1,$2,$3,$4,$5) RETURNING *",register_info.username,register_info.email,register_info.password,Option::<i32>::None,Option::<i32>::None)
+async fn register_user(State(pool): State<PgPool>, Json(register_info): Json<RegisterInfo>) {
+    let _ = sqlx::query!(
+        r#"
+INSERT INTO users (username,email,password,team_id,group_id)
+VALUES ($1,$2,$3,$4,$5)
+        "#,
+        register_info.username,
+        register_info.email,
+        register_info.password,
+        Option::<i32>::None,
+        Option::<i32>::None
+    )
     .fetch_one(&pool)
     .await
     .unwrap();
-    Json(new_user)
 }
 
 async fn login_user(State(pool): State<PgPool>, Json(login_info): Json<LoginInfo>) -> Json<User> {
     let search_user = sqlx::query_as!(
         User,
-        "SELECT * FROM users WHERE username=$1 AND password=$2",
+        r#"
+SELECT * 
+FROM users 
+WHERE username=$1 AND password=$2
+        "#,
         login_info.username,
         login_info.password
     )
