@@ -1,4 +1,7 @@
-use argon2::Config;
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordVerifier, SaltString},
+    Argon2, PasswordHasher,
+};
 use axum::{
     extract::{Path, State},
     routing::{get, post},
@@ -49,8 +52,6 @@ async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
     let pool = PgPool::connect(&database_url).await.unwrap();
-
-    hash_password(State(pool.clone())).await;
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -179,6 +180,8 @@ WHERE group_id = $1
 }
 
 async fn register_user(State(pool): State<PgPool>, Json(register_info): Json<RegisterInfo>) {
+    let password_hash = hash_password(register_info.password).await;
+
     let _ = sqlx::query!(
         r#"
 INSERT INTO users (username,email,password,team_id,group_id)
@@ -186,11 +189,11 @@ VALUES ($1,$2,$3,$4,$5)
         "#,
         register_info.username,
         register_info.email,
-        register_info.password,
+        password_hash,
         Option::<i32>::None,
         Option::<i32>::None
     )
-    .fetch_one(&pool)
+    .execute(&pool)
     .await
     .unwrap();
 }
@@ -201,51 +204,45 @@ async fn login_user(State(pool): State<PgPool>, Json(login_info): Json<LoginInfo
         r#"
 SELECT * 
 FROM users 
-WHERE username=$1 AND password=$2
+WHERE username=$1
         "#,
         login_info.username,
-        login_info.password
     )
     .fetch_optional(&pool)
     .await
     .unwrap();
 
     match search_user {
-        Some(user) => Json(user),
+        Some(user) => {
+            let is_valid = verify_password(login_info.password, user.password.clone()).await;
+
+            if is_valid {
+                Json(user)
+            } else {
+                panic!("密码错误")
+            }
+        }
         None => panic!("用户不存在"),
     }
 }
 
-async fn hash_password(State(pool): State<PgPool>) {
-    let users = sqlx::query_as!(
-        User,
-        r#"
-SELECT * 
-FROM users 
-        "#
-    )
-    .fetch_all(&pool)
-    .await
-    .unwrap();
-    let config = Config::default();
-    for user in users {
-        if user.password.contains("$argon2id$") {
-            continue;
-        }
-        let plian_password = user.password.as_bytes();
-        let salt = "salt_goes_here".as_bytes();
-        let hash_password = argon2::hash_encoded(plian_password, &salt, &config).unwrap();
-        let _ = sqlx::query! {
-            r#"
-UPDATE users 
-SET password = $1
-WHERE id = $2
-            "#,
-            hash_password,
-            user.id
-        }
-        .execute(&pool)
-        .await
-        .unwrap();
+async fn hash_password(password: String) -> String {
+    let argon2 = Argon2::default();
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = argon2
+        .hash_password(password.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+    password_hash
+}
+
+async fn verify_password(password: String, password_hash: String) -> bool {
+    let argon2 = Argon2::default();
+    match PasswordHash::new(&password_hash) {
+        Ok(password_hash) => match argon2.verify_password(password.as_bytes(), &password_hash) {
+            Ok(_) => true,
+            Err(_) => false,
+        },
+        Err(_) => false,
     }
 }
