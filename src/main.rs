@@ -4,21 +4,61 @@ use argon2::{
 };
 use axum::{
     extract::{Path, State},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
+use std::sync::LazyLock;
+use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
+use validator::Validate;
 
-#[derive(Serialize, Deserialize)]
+static ARGON2: LazyLock<Argon2> = LazyLock::new(|| Argon2::default());
+
+#[derive(Serialize, Deserialize, Validate)]
 struct User {
+    #[validate(range(min = 1))]
     id: i32,
+    #[validate(length(min = 1))]
     username: String,
+    #[validate(email)]
     email: String,
     team_id: Option<i32>,
     group_id: Option<i32>,
+    #[validate(length(min = 1))]
     password: String,
+}
+
+#[derive(Error, Debug)]
+pub enum ServerError {
+    #[error("用户不存在")]
+    UserNotFound,
+    #[error("密码错误")]
+    InvalidPassword,
+    #[error("数据库错误: {0}")]
+    DatabaseError(#[from] sqlx::Error),
+    #[error("注册失败: {0}")]
+    RegistrationError(String),
+    #[error("验证错误: {0}")]
+    ValidationError(String),
+    #[error("密码哈希错误")]
+    PasswordHashError,
+}
+
+impl IntoResponse for ServerError {
+    fn into_response(self) -> Response {
+        let error_response = match self {
+            ServerError::UserNotFound => "用户不存在".to_string(),
+            ServerError::InvalidPassword => "密码错误".to_string(),
+            ServerError::DatabaseError(err) => format!("数据库错误: {}", err),
+            ServerError::RegistrationError(err) => format!("注册失败: {}", err),
+            ServerError::ValidationError(err) => format!("验证错误: {}", err),
+            ServerError::PasswordHashError => "密码哈希错误".to_string(),
+        };
+        error_response.into_response()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -180,7 +220,7 @@ WHERE group_id = $1
 }
 
 async fn register_user(State(pool): State<PgPool>, Json(register_info): Json<RegisterInfo>) {
-    let password_hash = hash_password(register_info.password).await;
+    let password_hash = hash_password(register_info.password);
 
     let _ = sqlx::query!(
         r#"
@@ -214,7 +254,7 @@ WHERE username=$1
 
     match search_user {
         Some(user) => {
-            let is_valid = verify_password(login_info.password, user.password.clone()).await;
+            let is_valid = verify_password(login_info.password, user.password.clone());
 
             if is_valid {
                 Json(user)
@@ -226,20 +266,18 @@ WHERE username=$1
     }
 }
 
-async fn hash_password(password: String) -> String {
-    let argon2 = Argon2::default();
+fn hash_password(password: String) -> String {
     let salt = SaltString::generate(&mut OsRng);
-    let password_hash = argon2
+    let password_hash = ARGON2
         .hash_password(password.as_bytes(), &salt)
         .unwrap()
         .to_string();
     password_hash
 }
 
-async fn verify_password(password: String, password_hash: String) -> bool {
-    let argon2 = Argon2::default();
+fn verify_password(password: String, password_hash: String) -> bool {
     match PasswordHash::new(&password_hash) {
-        Ok(password_hash) => match argon2.verify_password(password.as_bytes(), &password_hash) {
+        Ok(password_hash) => match ARGON2.verify_password(password.as_bytes(), &password_hash) {
             Ok(_) => true,
             Err(_) => false,
         },
