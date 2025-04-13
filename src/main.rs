@@ -17,17 +17,13 @@ use validator::Validate;
 
 static ARGON2: LazyLock<Argon2> = LazyLock::new(|| Argon2::default());
 
-#[derive(Serialize, Deserialize, Validate)]
+#[derive(Serialize, Deserialize)]
 struct User {
-    #[validate(range(min = 1))]
     id: i32,
-    #[validate(length(min = 1))]
     username: String,
-    #[validate(email)]
     email: String,
     team_id: Option<i32>,
     group_id: Option<i32>,
-    #[validate(length(min = 1))]
     password: String,
 }
 
@@ -42,7 +38,7 @@ pub enum ServerError {
     #[error("注册失败: {0}")]
     RegistrationError(String),
     #[error("验证错误: {0}")]
-    ValidationError(String),
+    ValidationError(#[from] validator::ValidationErrors),
     #[error("密码哈希错误")]
     PasswordHashError,
 }
@@ -74,10 +70,13 @@ struct Group {
     team_id: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Validate, Clone)]
 struct RegisterInfo {
+    #[validate(length(min = 1))]
     username: String,
+    #[validate(email)]
     email: String,
+    #[validate(length(min = 6))]
     password: String,
 }
 
@@ -116,7 +115,7 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-async fn get_users(State(pool): State<PgPool>) -> Json<Vec<User>> {
+async fn get_users(State(pool): State<PgPool>) -> Result<Json<Vec<User>>, ServerError> {
     let users = sqlx::query_as!(
         User,
         r#"
@@ -126,12 +125,11 @@ ORDER BY id
         "#
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
-    Json(users)
+    .await?;
+    Ok(Json(users))
 }
 
-async fn get_teams(State(pool): State<PgPool>) -> Json<Vec<Team>> {
+async fn get_teams(State(pool): State<PgPool>) -> Result<Json<Vec<Team>>, ServerError> {
     let teams = sqlx::query_as!(
         Team,
         r#"
@@ -141,15 +139,14 @@ ORDER BY id
         "#
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
-    Json(teams)
+    .await?;
+    Ok(Json(teams))
 }
 
 async fn get_users_by_team_id_path(
     State(pool): State<PgPool>,
     Path(team_id): Path<i32>,
-) -> Json<Vec<User>> {
+) -> Result<Json<Vec<User>>, ServerError> {
     let users = sqlx::query_as!(
         User,
         r#"
@@ -160,12 +157,11 @@ WHERE team_id = $1
         team_id
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
-    Json(users)
+    .await?;
+    Ok(Json(users))
 }
 
-async fn get_groups(State(pool): State<PgPool>) -> Json<Vec<Group>> {
+async fn get_groups(State(pool): State<PgPool>) -> Result<Json<Vec<Group>>, ServerError> {
     let groups = sqlx::query_as!(
         Group,
         r#"
@@ -175,15 +171,14 @@ ORDER BY id
         "#
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
-    Json(groups)
+    .await?;
+    Ok(Json(groups))
 }
 
 async fn get_groups_by_team_id(
     State(pool): State<PgPool>,
     Path(team_id): Path<i32>,
-) -> Json<Vec<Group>> {
+) -> Result<Json<Vec<Group>>, ServerError> {
     let groups = sqlx::query_as!(
         Group,
         r#"
@@ -194,15 +189,14 @@ WHERE team_id = $1
         team_id
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
-    Json(groups)
+    .await?;
+    Ok(Json(groups))
 }
 
 async fn get_users_by_group_id(
     State(pool): State<PgPool>,
     Path(group_id): Path<i32>,
-) -> Json<Vec<User>> {
+) -> Result<Json<Vec<User>>, ServerError> {
     let users = sqlx::query_as!(
         User,
         r#"
@@ -213,14 +207,17 @@ WHERE group_id = $1
         group_id
     )
     .fetch_all(&pool)
-    .await
-    .unwrap();
+    .await?;
 
-    Json(users)
+    Ok(Json(users))
 }
 
-async fn register_user(State(pool): State<PgPool>, Json(register_info): Json<RegisterInfo>) {
-    let password_hash = hash_password(register_info.password);
+async fn register_user(
+    State(pool): State<PgPool>,
+    Json(register_info): Json<RegisterInfo>,
+) -> Result<(), ServerError> {
+    register_info.validate()?;
+    let password_hash = hash_password(register_info.password)?;
 
     let _ = sqlx::query!(
         r#"
@@ -234,11 +231,14 @@ VALUES ($1,$2,$3,$4,$5)
         Option::<i32>::None
     )
     .execute(&pool)
-    .await
-    .unwrap();
+    .await?;
+    Ok(())
 }
 
-async fn login_user(State(pool): State<PgPool>, Json(login_info): Json<LoginInfo>) -> Json<User> {
+async fn login_user(
+    State(pool): State<PgPool>,
+    Json(login_info): Json<LoginInfo>,
+) -> Result<Json<User>, ServerError> {
     let search_user = sqlx::query_as!(
         User,
         r#"
@@ -249,30 +249,30 @@ WHERE username=$1
         login_info.username,
     )
     .fetch_optional(&pool)
-    .await
-    .unwrap();
+    .await?;
 
     match search_user {
         Some(user) => {
             let is_valid = verify_password(login_info.password, user.password.clone());
 
             if is_valid {
-                Json(user)
+                Ok(Json(user))
             } else {
-                panic!("密码错误")
+                Err(ServerError::InvalidPassword)
             }
         }
-        None => panic!("用户不存在"),
+        None => Err(ServerError::UserNotFound),
     }
 }
 
-fn hash_password(password: String) -> String {
+fn hash_password(password: String) -> Result<String, ServerError> {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
         .hash_password(password.as_bytes(), &salt)
-        .unwrap()
+        .map_err(|_| ServerError::PasswordHashError)?
         .to_string();
-    password_hash
+
+    Ok(password_hash)
 }
 
 fn verify_password(password: String, password_hash: String) -> bool {
