@@ -13,9 +13,17 @@ use sqlx::postgres::PgPool;
 use std::sync::LazyLock;
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
-use validator::Validate;
+use validator::{Validate,ValidationError};
+use regex::Regex;
 
 static ARGON2: LazyLock<Argon2> = LazyLock::new(|| Argon2::default());
+static LOWERCASE_RE: LazyLock<Regex>=LazyLock::new(||Regex::new(r".*[a-z].*]")
+    .expect("Invalid lowercase regex pattern"));
+static UPPERCASE_RE: LazyLock<Regex>=LazyLock::new(||Regex::new(r".*[A-Z].*")
+    .expect("Invalid uppercase regex pattern"));
+
+static DIGIT_RE:LazyLock<Regex>=LazyLock::new(||Regex::new(r".*\d.*")
+    .expect("Invalid uppercase regex pattern"));
 
 #[derive(Serialize, Deserialize)]
 struct User {
@@ -29,29 +37,29 @@ struct User {
 
 #[derive(Error, Debug)]
 pub enum ServerError {
-    #[error("用户不存在")]
+    #[error("User does not exist")]
     UserNotFound,
-    #[error("密码错误")]
+    #[error("Password Error")]
     InvalidPassword,
-    #[error("数据库错误: {0}")]
+    #[error("Database Error: {0}")]
     DatabaseError(#[from] sqlx::Error),
-    #[error("注册失败: {0}")]
+    #[error(":Registration Error{0}")]
     RegistrationError(String),
-    #[error("验证错误: {0}")]
+    #[error("Validation Error : {0}")]
     ValidationError(#[from] validator::ValidationErrors),
-    #[error("密码哈希错误")]
+    #[error("Password Hash Error")]
     PasswordHashError,
 }
 
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let error_response = match self {
-            ServerError::UserNotFound => "用户不存在".to_string(),
-            ServerError::InvalidPassword => "密码错误".to_string(),
-            ServerError::DatabaseError(err) => format!("数据库错误: {}", err),
-            ServerError::RegistrationError(err) => format!("注册失败: {}", err),
-            ServerError::ValidationError(err) => format!("验证错误: {}", err),
-            ServerError::PasswordHashError => "密码哈希错误".to_string(),
+            ServerError::UserNotFound => "User does not exist".to_string(),
+            ServerError::InvalidPassword => "Password Error".to_string(),
+            ServerError::DatabaseError(err) => format!("Database Error: {}", err),
+            ServerError::RegistrationError(err) => format!("Registration Error: {}", err),
+            ServerError::ValidationError(err) => format!("Validation Error: {}", err),
+            ServerError::PasswordHashError => "Password Hash Error".to_string(),
         };
         error_response.into_response()
     }
@@ -72,11 +80,13 @@ struct Group {
 
 #[derive(Deserialize, Validate, Clone)]
 struct RegisterInfo {
-    #[validate(length(min = 1))]
+    #[validate(length(min = 1,max=50))]
     username: String,
     #[validate(email)]
+    #[validate(length(max=100))]
     email: String,
     #[validate(length(min = 6))]
+    #[validate(custom(function = "validate_password"))]
     password: String,
 }
 
@@ -217,7 +227,11 @@ async fn register_user(
     Json(register_info): Json<RegisterInfo>,
 ) -> Result<(), ServerError> {
     register_info.validate()?;
-    let password_hash = hash_password(register_info.password)?;
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = ARGON2
+        .hash_password(register_info.password.as_bytes(), &salt)
+        .map_err(|_| ServerError::PasswordHashError)?
+        .to_string();
 
     let _ = sqlx::query!(
         r#"
@@ -253,7 +267,14 @@ WHERE username=$1
 
     match search_user {
         Some(user) => {
-            let is_valid = verify_password(login_info.password, user.password.clone());
+            let password_hash = match PasswordHash::new(&user.password)
+            {
+                Ok(hash)=>hash,
+                Err(_)=> return Err(ServerError::PasswordHashError),
+            };
+
+            let is_valid =ARGON2.verify_password(login_info.password.as_bytes(),&password_hash)
+                .is_ok();
 
             if is_valid {
                 Ok(Json(user))
@@ -265,22 +286,15 @@ WHERE username=$1
     }
 }
 
-fn hash_password(password: String) -> Result<String, ServerError> {
-    let salt = SaltString::generate(&mut OsRng);
-    let password_hash = ARGON2
-        .hash_password(password.as_bytes(), &salt)
-        .map_err(|_| ServerError::PasswordHashError)?
-        .to_string();
+fn validate_password(password: &str) -> Result<(), ValidationError> {
+    let lowercase = LOWERCASE_RE.is_match(password);
+    let uppercase = UPPERCASE_RE.is_match(password);
+    let digit = DIGIT_RE.is_match(password);
 
-    Ok(password_hash)
-}
-
-fn verify_password(password: String, password_hash: String) -> bool {
-    match PasswordHash::new(&password_hash) {
-        Ok(password_hash) => match ARGON2.verify_password(password.as_bytes(), &password_hash) {
-            Ok(_) => true,
-            Err(_) => false,
-        },
-        Err(_) => false,
+    if lowercase && uppercase && digit {
+        Ok(())
+    } else {
+        let error = ValidationError::new("password_error");
+        Err(error)
     }
 }
