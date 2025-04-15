@@ -1,37 +1,38 @@
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordVerifier, SaltString},
     Argon2, PasswordHasher,
+    password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use axum::{
+    Json, Router,
     extract::{Path, State},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use std::sync::LazyLock;
 use thiserror::Error;
 use tower_http::cors::{Any, CorsLayer};
-use validator::{Validate,ValidationError};
-use regex::Regex;
+use uuid::Uuid;
+use validator::{Validate, ValidationError};
 
-static ARGON2: LazyLock<Argon2> = LazyLock::new(|| Argon2::default());
-static LOWERCASE_RE: LazyLock<Regex>=LazyLock::new(||Regex::new(r".*[a-z].*]")
-    .expect("Invalid lowercase regex pattern"));
-static UPPERCASE_RE: LazyLock<Regex>=LazyLock::new(||Regex::new(r".*[A-Z].*")
-    .expect("Invalid uppercase regex pattern"));
+static ARGON2: LazyLock<Argon2> = LazyLock::new(Argon2::default);
+static LOWERCASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r".*[a-z].*").expect("Invalid lowercase regex pattern"));
+static UPPERCASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r".*[A-Z].*").expect("Invalid uppercase regex pattern"));
 
-static DIGIT_RE:LazyLock<Regex>=LazyLock::new(||Regex::new(r".*\d.*")
-    .expect("Invalid uppercase regex pattern"));
+static DIGIT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r".*\d.*").expect("Invalid uppercase regex pattern"));
 
 #[derive(Serialize, Deserialize)]
 struct User {
-    id: i32,
+    id: Uuid,
     username: String,
-    email: String,
-    team_id: Option<i32>,
-    group_id: Option<i32>,
+    primary_email_address: String,
+    team_id: Option<Uuid>,
+    group_id: Option<Uuid>,
     password: String,
 }
 
@@ -67,23 +68,23 @@ impl IntoResponse for ServerError {
 
 #[derive(Serialize, Deserialize)]
 struct Team {
-    id: i32,
+    id: Uuid,
     name: String,
 }
 
 #[derive(Serialize, Deserialize)]
 struct Group {
-    id: i32,
+    id: Uuid,
     name: String,
-    team_id: i32,
+    team_id: Uuid,
 }
 
 #[derive(Deserialize, Validate, Clone)]
 struct RegisterInfo {
-    #[validate(length(min = 1,max=50))]
+    #[validate(length(min = 1, max = 50))]
     username: String,
     #[validate(email)]
-    #[validate(length(max=100))]
+    #[validate(length(max = 100))]
     email: String,
     #[validate(length(min = 6))]
     #[validate(custom(function = "validate_password"))]
@@ -155,7 +156,7 @@ ORDER BY id
 
 async fn get_users_by_team_id_path(
     State(pool): State<PgPool>,
-    Path(team_id): Path<i32>,
+    Path(team_id): Path<Uuid>,
 ) -> Result<Json<Vec<User>>, ServerError> {
     let users = sqlx::query_as!(
         User,
@@ -187,7 +188,7 @@ ORDER BY id
 
 async fn get_groups_by_team_id(
     State(pool): State<PgPool>,
-    Path(team_id): Path<i32>,
+    Path(team_id): Path<Uuid>,
 ) -> Result<Json<Vec<Group>>, ServerError> {
     let groups = sqlx::query_as!(
         Group,
@@ -205,7 +206,7 @@ WHERE team_id = $1
 
 async fn get_users_by_group_id(
     State(pool): State<PgPool>,
-    Path(group_id): Path<i32>,
+    Path(group_id): Path<Uuid>,
 ) -> Result<Json<Vec<User>>, ServerError> {
     let users = sqlx::query_as!(
         User,
@@ -235,14 +236,14 @@ async fn register_user(
 
     let _ = sqlx::query!(
         r#"
-INSERT INTO users (username,email,password,team_id,group_id)
+INSERT INTO users (username,primary_email_address,password,team_id,group_id)
 VALUES ($1,$2,$3,$4,$5)
         "#,
         register_info.username,
         register_info.email,
         password_hash,
-        Option::<i32>::None,
-        Option::<i32>::None
+        Option::<Uuid>::None,
+        Option::<Uuid>::None
     )
     .execute(&pool)
     .await?;
@@ -267,13 +268,13 @@ WHERE username=$1
 
     match search_user {
         Some(user) => {
-            let password_hash = match PasswordHash::new(&user.password)
-            {
-                Ok(hash)=>hash,
-                Err(_)=> return Err(ServerError::PasswordHashError),
+            let password_hash = match PasswordHash::new(&user.password) {
+                Ok(hash) => hash,
+                Err(_) => return Err(ServerError::PasswordHashError),
             };
 
-            let is_valid =ARGON2.verify_password(login_info.password.as_bytes(),&password_hash)
+            let is_valid = ARGON2
+                .verify_password(login_info.password.as_bytes(), &password_hash)
                 .is_ok();
 
             if is_valid {
@@ -296,5 +297,29 @@ fn validate_password(password: &str) -> Result<(), ValidationError> {
     } else {
         let error = ValidationError::new("password_error");
         Err(error)
+    }
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    use sqlx::postgres::PgPool;
+    #[tokio::test]
+    async fn test_register_user()
+    {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        let register_info =RegisterInfo{
+            username: "test_user".to_string(),
+            email:"testuser@example.com".to_string(),
+            password:"Password123!".to_string(),
+        };
+        let result =register_user(State(pool),Json(register_info)).await;
+        match result{
+            Ok(_)=>println!("User registered successfully"),
+            Err(ref e)=>println!("Failed to register user: {}",e),
+        }
+        assert!(result.is_ok());
     }
 }
