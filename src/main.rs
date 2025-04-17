@@ -312,7 +312,9 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    
     use sqlx::postgres::PgPool;
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     async fn create_test_app() -> Router {
@@ -322,6 +324,14 @@ mod tests {
             .route("/api/register", post(register_user))
             .with_state(pool)
     }
+
+    async fn get_html(response: Response<Body>) -> String {
+        let body = response.into_body();
+        let collected = body.collect().await.unwrap();
+        let bytes = collected.to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
 
     #[tokio::test]
     async fn test_register_user_success() {
@@ -343,5 +353,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_register_user_failed(){
+        let app =create_test_app().await;
+        let register_info = RegisterInfo {
+            username: "test_2".to_string(),
+            email: "test_2@example.com".to_string(),
+            password: "p2025test2".to_string(),
+        };
+        let response =app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/register")
+                    .method("POST")
+                    .header("Content-Type","application/json")
+                    .body(Body::from(serde_json::to_string(&register_info).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status(),StatusCode::OK);
+        let html = get_html(response).await;
+        assert_eq!(html, "Validation Error: password: passwords must contain at least one upper case letter");
+
     }
 }
