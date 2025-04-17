@@ -26,6 +26,7 @@ struct User {
     id: Uuid,
     username: String,
     primary_email_address: String,
+    organization_id: Option<Uuid>,
     team_id: Option<Uuid>,
     group_id: Option<Uuid>,
     password: String,
@@ -77,6 +78,7 @@ impl IntoResponse for ServerError {
 struct Team {
     id: Uuid,
     name: String,
+    organization_id: Uuid,
 }
 
 #[derive(Serialize, Deserialize)]
