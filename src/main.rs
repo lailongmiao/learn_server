@@ -319,7 +319,7 @@ mod tests {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let pool = PgPool::connect(&database_url).await.unwrap();
         Router::new()
-            .route("/api/users", get(get_users))
+            .route("/api/register", post(register_user))
             .with_state(pool)
     }
 
@@ -336,6 +336,7 @@ mod tests {
                 Request::builder()
                     .uri("/api/register")
                     .method("POST")
+                    .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&register_info).unwrap()))
                     .unwrap(),
             )
