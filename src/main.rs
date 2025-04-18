@@ -1,7 +1,7 @@
 use argon2::{Argon2, PasswordHasher, password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng}, password_hash};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, State,FromRequest, Request,rejection},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -37,6 +37,8 @@ pub enum ServerError {
     DatabaseError(#[from] sqlx::Error),
     #[error(transparent)]
     ValidationError(#[from] validator::ValidationErrors),
+    #[error(transparent)]
+    JsonRejectionError(#[from] rejection::JsonRejection),
 }
 
 impl IntoResponse for ServerError {
@@ -53,6 +55,10 @@ impl IntoResponse for ServerError {
             ServerError::PasswordHashError(err)=> (
                 StatusCode::BAD_REQUEST,
                 format!("Password_hash Error: {}", err),
+            ),
+            ServerError::JsonRejectionError(err) => (
+                StatusCode::BAD_REQUEST,
+                format!("Json Rejection Error: {}", err),
             ),
         };
         error_response.into_response()
@@ -103,6 +109,25 @@ struct LoginInfo {
     #[validate(length(min = 6, message = "The password does not meet the verification rules"))]
     #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
     password: String,
+}
+
+struct ValidatedFrom
+{
+    info:RegisterInfo
+}
+
+impl<S> FromRequest<S> for ValidatedFrom
+where
+    S: Send + Sync,
+{
+    type Rejection = ServerError;
+    async fn from_request(req: Request,state:& S) -> Result<Self,Self::Rejection>
+    {
+        let Json(register_info) = Json::<RegisterInfo>::from_request(req,state)
+        .await?;
+        register_info.validate()?;
+        Ok(ValidatedFrom{info:register_info})
+    }
 }
 
 #[tokio::main]
@@ -233,9 +258,8 @@ WHERE group_id = $1
 
 async fn register_user(
     State(pool): State<PgPool>,
-    Json(register_info): Json<RegisterInfo>,
+    ValidatedFrom { info: register_info }: ValidatedFrom
 ) -> Result<(), ServerError> {
-    register_info.validate()?;
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
         .hash_password(register_info.password.as_bytes(), &salt)?
