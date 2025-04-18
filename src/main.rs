@@ -1,7 +1,4 @@
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, PasswordHasher, password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng}, password_hash};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -38,36 +35,36 @@ pub enum ServerError {
     UserNotFound,
     #[error("Password Error")]
     InvalidPassword,
-    #[error("Password Hash Error")]
-    PasswordHashError,
-    #[error("transparent")]
+    #[error("Registration failed")]
+    RegistrationError,
+    #[error(transparent)]
+    PasswordHashError(#[from] password_hash::Error),
+    #[error(transparent)]
     DatabaseError(#[from] sqlx::Error),
-    #[error("transparent")]
-    RegistrationError(String),
-    #[error("transparent")]
+    #[error(transparent)]
     ValidationError(#[from] validator::ValidationErrors),
 }
 
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let error_response = match self {
-            ServerError::UserNotFound => (StatusCode::NOT_FOUND, "User does not exist".to_string()),
+            ServerError::UserNotFound => (StatusCode::BAD_REQUEST, "User does not exist".to_string()),
             ServerError::InvalidPassword => (StatusCode::BAD_REQUEST, "Password Error".to_string()),
             ServerError::DatabaseError(err) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::BAD_REQUEST,
                 format!("Database Error: {}", err),
             ),
-            ServerError::RegistrationError(err) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                format!("Registration Error: {}", err),
+            ServerError::RegistrationError => (
+                StatusCode::BAD_REQUEST,
+                "Registration failed".to_string(),
             ),
             ServerError::ValidationError(err) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::BAD_REQUEST,
                 format!("Validation Error: {}", err),
             ),
-            ServerError::PasswordHashError => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "Password Hash Error".to_string(),
+            ServerError::PasswordHashError(err)=> (
+                StatusCode::BAD_REQUEST,
+                format!("Password_hash Error: {}", err),
             ),
         };
         error_response.into_response()
@@ -113,6 +110,7 @@ struct LoginInfo {
     ))]
     username: String,
     #[validate(length(min = 6, message = "The password does not meet the verification rules"))]
+    #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
     password: String,
 }
 
@@ -249,8 +247,7 @@ async fn register_user(
     register_info.validate()?;
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
-        .hash_password(register_info.password.as_bytes(), &salt)
-        .map_err(|_| ServerError::PasswordHashError)?
+        .hash_password(register_info.password.as_bytes(), &salt)?
         .to_string();
 
     let _ = sqlx::query!(
@@ -288,10 +285,7 @@ WHERE username=$1
 
     match search_user {
         Some(user) => {
-            let password_hash = match PasswordHash::new(&user.password) {
-                Ok(hash) => hash,
-                Err(_) => return Err(ServerError::PasswordHashError),
-            };
+            let password_hash =PasswordHash::new(&user.password)?;
 
             let is_valid = ARGON2
                 .verify_password(login_info.password.as_bytes(), &password_hash)
@@ -314,7 +308,7 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
-    
+
     use sqlx::postgres::PgPool;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -376,7 +370,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(response.status(),StatusCode::OK);
+            assert_eq!(response.status(),StatusCode::BAD_REQUEST);
         let html = get_html(response).await;
         assert_eq!(html, "Validation Error: password: passwords must contain at least one upper case letter");
 
