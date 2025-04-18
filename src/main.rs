@@ -99,6 +99,8 @@ struct RegisterInfo {
     #[validate(length(min = 6, message = "The password must be at least 6 characters"))]
     #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
     password: String,
+    #[validate(must_match(other = "password",message = "The two passwords you entered do not match."))]
+    confirm_password:String,
 }
 
 #[derive(Deserialize, Serialize, Validate)]
@@ -336,6 +338,7 @@ mod tests {
             username: "haoxiangzhou".to_string(),
             email: "haoxiangzhou@example.com".to_string(),
             password: "P2025zhx".to_string(),
+            confirm_password: "P2025zhx".to_string(),
         };
         let response = app
             .oneshot(
@@ -358,6 +361,7 @@ mod tests {
             username: "test_2".to_string(),
             email: "test_2@example.com".to_string(),
             password: "p2025test2".to_string(),
+            confirm_password: "p2025test2".to_string(),
         };
         let response =app
             .oneshot(
