@@ -31,12 +31,6 @@ struct User {
 
 #[derive(Error, Debug)]
 pub enum ServerError {
-    #[error("User does not exist")]
-    UserNotFound,
-    #[error("Password Error")]
-    InvalidPassword,
-    #[error("Registration failed")]
-    RegistrationError,
     #[error(transparent)]
     PasswordHashError(#[from] password_hash::Error),
     #[error(transparent)]
@@ -48,15 +42,9 @@ pub enum ServerError {
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let error_response = match self {
-            ServerError::UserNotFound => (StatusCode::BAD_REQUEST, "User does not exist".to_string()),
-            ServerError::InvalidPassword => (StatusCode::BAD_REQUEST, "Password Error".to_string()),
             ServerError::DatabaseError(err) => (
                 StatusCode::BAD_REQUEST,
                 format!("Database Error: {}", err),
-            ),
-            ServerError::RegistrationError => (
-                StatusCode::BAD_REQUEST,
-                "Registration failed".to_string(),
             ),
             ServerError::ValidationError(err) => (
                 StatusCode::BAD_REQUEST,
@@ -98,6 +86,7 @@ struct RegisterInfo {
     email: String,
     #[validate(length(min = 6, message = "The password must be at least 6 characters"))]
     #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
+    #[validate(must_match(other = "confirm_password",message = "The two passwords you entered do not match."))]
     password: String,
     #[validate(must_match(other = "password",message = "The two passwords you entered do not match."))]
     confirm_password:String,
@@ -282,25 +271,11 @@ WHERE username=$1
         "#,
         login_info.username,
     )
-    .fetch_optional(&pool)
-    .await?;
-
-    match search_user {
-        Some(user) => {
-            let password_hash =PasswordHash::new(&user.password)?;
-
-            let is_valid = ARGON2
-                .verify_password(login_info.password.as_bytes(), &password_hash)
-                .is_ok();
-
-            if is_valid {
-                Ok(Json(user))
-            } else {
-                Err(ServerError::InvalidPassword)
-            }
-        }
-        None => Err(ServerError::UserNotFound),
-    }
+        .fetch_one(&pool)
+        .await?;
+    let hash = PasswordHash::new(&search_user.password)?;
+    ARGON2.verify_password(login_info.password.as_bytes(),&hash)?;
+    Ok(Json(search_user))
 }
 
 #[cfg(test)]
