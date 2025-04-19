@@ -7,7 +7,7 @@ use axum::{
 };
 use http::StatusCode;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sqlx::postgres::PgPool;
 use std::sync::LazyLock;
 use thiserror::Error;
@@ -111,22 +111,23 @@ struct LoginInfo {
     password: String,
 }
 
-struct ValidatedFrom
+struct ValidatedFrom<T>
 {
-    info:RegisterInfo
+    info: T,
 }
 
-impl<S> FromRequest<S> for ValidatedFrom
+impl<T,S> FromRequest<S> for ValidatedFrom<T>
 where
+    T: DeserializeOwned + Validate,
     S: Send + Sync,
 {
     type Rejection = ServerError;
     async fn from_request(req: Request,state:& S) -> Result<Self,Self::Rejection>
     {
-        let Json(register_info) = Json::<RegisterInfo>::from_request(req,state)
+        let Json(info) = Json::<T>::from_request(req,state)
         .await?;
-        register_info.validate()?;
-        Ok(ValidatedFrom{info:register_info})
+        info.validate()?;
+        Ok(ValidatedFrom{info})
     }
 }
 
@@ -258,7 +259,7 @@ WHERE group_id = $1
 
 async fn register_user(
     State(pool): State<PgPool>,
-    ValidatedFrom { info: register_info }: ValidatedFrom
+    ValidatedFrom{info: register_info}:ValidatedFrom<RegisterInfo>
 ) -> Result<(), ServerError> {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
@@ -283,7 +284,7 @@ VALUES ($1,$2,$3,$4,$5)
 
 async fn login_user(
     State(pool): State<PgPool>,
-    Json(login_info): Json<LoginInfo>,
+    ValidatedFrom{info:login_info}:ValidatedFrom<LoginInfo>
 ) -> Result<Json<User>, ServerError> {
     login_info.validate()?;
     let search_user = sqlx::query_as!(
@@ -329,6 +330,22 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
+    async fn drop_data(info:RegisterInfo) {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = PgPool::connect(&database_url).await.unwrap(); // 使用 .await 解包 Future
+        let _ = sqlx::query_as!(
+            User,
+            r#"
+DELETE FROM users 
+WHERE username = $1
+            "#,
+            info.username,
+        )
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
 
     #[tokio::test]
     async fn test_register_user_success() {
@@ -351,6 +368,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        drop_data(register_info).await;
     }
 
     #[tokio::test]
