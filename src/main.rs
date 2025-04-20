@@ -111,10 +111,7 @@ struct LoginInfo {
     password: String,
 }
 
-struct ValidatedFrom<T>
-{
-    info: T,
-}
+struct ValidatedFrom<T>(pub T);
 
 impl<T,S> FromRequest<S> for ValidatedFrom<T>
 where
@@ -127,7 +124,7 @@ where
         let Json(info) = Json::<T>::from_request(req,state)
         .await?;
         info.validate()?;
-        Ok(ValidatedFrom{info})
+        Ok(ValidatedFrom(info))
     }
 }
 
@@ -259,7 +256,7 @@ WHERE group_id = $1
 
 async fn register_user(
     State(pool): State<PgPool>,
-    ValidatedFrom{info: register_info}:ValidatedFrom<RegisterInfo>
+    ValidatedFrom(register_info): ValidatedFrom<RegisterInfo>
 ) -> Result<(), ServerError> {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
@@ -284,7 +281,7 @@ VALUES ($1,$2,$3,$4,$5)
 
 async fn login_user(
     State(pool): State<PgPool>,
-    ValidatedFrom{info:login_info}:ValidatedFrom<LoginInfo>
+    ValidatedFrom(login_info):ValidatedFrom<LoginInfo>
 ) -> Result<Json<User>, ServerError> {
     login_info.validate()?;
     let search_user = sqlx::query_as!(
