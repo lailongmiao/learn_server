@@ -1,7 +1,10 @@
-use argon2::{Argon2, PasswordHasher, password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng}, password_hash};
+use argon2::{
+    Argon2, PasswordHasher, password_hash,
+    password_hash::{PasswordHash, PasswordVerifier, SaltString, rand_core::OsRng},
+};
 use axum::{
     Json, Router,
-    extract::{Path, State,FromRequest, Request,rejection},
+    extract::{Form, FromRequest, Path, Request, State, rejection},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -44,22 +47,10 @@ pub enum ServerError {
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let error_response = match self {
-            ServerError::DatabaseError(err) => (
-                StatusCode::BAD_REQUEST,
-                format!("Database Error: {}", err),
-            ),
-            ServerError::ValidationError(err) => (
-                StatusCode::BAD_REQUEST,
-                format!("Validation Error: {}", err),
-            ),
-            ServerError::PasswordHashError(err)=> (
-                StatusCode::BAD_REQUEST,
-                format!("Password_hash Error: {}", err),
-            ),
-            ServerError::JsonRejectionError(err) => (
-                StatusCode::BAD_REQUEST,
-                format!("Json Rejection Error: {}", err),
-            ),
+            ServerError::DatabaseError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ServerError::ValidationError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ServerError::PasswordHashError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ServerError::JsonRejectionError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
         };
         error_response.into_response()
     }
@@ -81,50 +72,40 @@ struct Group {
 
 #[derive(Deserialize, Serialize, Validate)]
 struct RegisterInfo {
-    #[validate(length(
-        min = 3,
-        max = 30,
-        message = "Username must be between 3 and 30 characters long"
-    ))]
+    #[validate(length(min = 3, max = 30,))]
     username: String,
-    #[validate(email(message = "Please enter a valid email address"))]
-    #[validate(length(max = 50, message = "Email address length cannot exceed 50 characters"))]
+    #[validate(email())]
+    #[validate(length(max = 50))]
     email: String,
-    #[validate(length(min = 6, message = "The password must be at least 6 characters"))]
-    #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
-    #[validate(must_match(other = "confirm_password",message = "The two passwords you entered do not match."))]
+    #[validate(length(min = 6))]
+    #[validate(regex(path=*UPPERCASE_RE))]
+    #[validate(must_match(other = "confirm_password"))]
     password: String,
-    #[validate(must_match(other = "password",message = "The two passwords you entered do not match."))]
-    confirm_password:String,
+    #[validate(must_match(other = "password"))]
+    confirm_password: String,
 }
 
 #[derive(Deserialize, Serialize, Validate)]
 struct LoginInfo {
-    #[validate(length(
-        min = 3,
-        max = 30,
-        message = "The Username does not conform to validation rules"
-    ))]
+    #[validate(length(min = 3, max = 30,))]
     username: String,
-    #[validate(length(min = 6, message = "The password does not meet the verification rules"))]
-    #[validate(regex(path=*UPPERCASE_RE,message = "passwords must contain at least one upper case letter"))]
+    #[validate(length(min = 6))]
+    #[validate(regex(path=*UPPERCASE_RE))]
     password: String,
 }
 
-struct ValidatedFrom<T>(pub T);
+struct ValidatedJson<T>(pub T);
 
-impl<T,S> FromRequest<S> for ValidatedFrom<T>
+impl<T, S> FromRequest<S> for ValidatedJson<T>
 where
     T: DeserializeOwned + Validate,
     S: Send + Sync,
 {
     type Rejection = ServerError;
-    async fn from_request(req: Request,state:& S) -> Result<Self,Self::Rejection>
-    {
-        let Json(info) = Json::<T>::from_request(req,state)
-        .await?;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(info) = Json::<T>::from_request(req, state).await?;
         info.validate()?;
-        Ok(ValidatedFrom(info))
+        Ok(ValidatedJson(info))
     }
 }
 
@@ -146,6 +127,7 @@ async fn main() {
         .route("/api/groups", get(get_groups))
         .route("/api/teams/{team_id}/groups", get(get_groups_by_team_id))
         .route("/api/groups/{group_id}/users", get(get_users_by_group_id))
+        .route("/api/users/find", post(find_user_by_form))
         .route("/api/register", post(register_user))
         .route("/api/login", post(login_user))
         .with_state(pool)
@@ -254,9 +236,27 @@ WHERE group_id = $1
     Ok(Json(users))
 }
 
+async fn find_user_by_form(
+    State(pool): State<PgPool>,
+    Form(user): Form<User>,
+) -> Result<Json<User>, ServerError> {
+    let user = sqlx::query_as!(
+        User,
+        r#"
+SELECT * 
+FROM users 
+WHERE username=$1
+        "#,
+        user.username,
+    )
+    .fetch_one(&pool)
+    .await?;
+    Ok(Json(user))
+}
+
 async fn register_user(
     State(pool): State<PgPool>,
-    ValidatedFrom(register_info): ValidatedFrom<RegisterInfo>
+    ValidatedJson(register_info): ValidatedJson<RegisterInfo>,
 ) -> Result<(), ServerError> {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = ARGON2
@@ -281,7 +281,7 @@ VALUES ($1,$2,$3,$4,$5)
 
 async fn login_user(
     State(pool): State<PgPool>,
-    ValidatedFrom(login_info):ValidatedFrom<LoginInfo>
+    ValidatedJson(login_info): ValidatedJson<LoginInfo>,
 ) -> Result<Json<User>, ServerError> {
     login_info.validate()?;
     let search_user = sqlx::query_as!(
@@ -293,10 +293,10 @@ WHERE username=$1
         "#,
         login_info.username,
     )
-        .fetch_one(&pool)
-        .await?;
+    .fetch_one(&pool)
+    .await?;
     let hash = PasswordHash::new(&search_user.password)?;
-    ARGON2.verify_password(login_info.password.as_bytes(),&hash)?;
+    ARGON2.verify_password(login_info.password.as_bytes(), &hash)?;
     Ok(Json(search_user))
 }
 
@@ -308,8 +308,8 @@ mod tests {
         http::{Request, StatusCode},
     };
 
-    use sqlx::postgres::PgPool;
     use http_body_util::BodyExt;
+    use sqlx::postgres::PgPool;
     use tower::ServiceExt;
 
     async fn create_test_app() -> Router {
@@ -327,7 +327,7 @@ mod tests {
         String::from_utf8(bytes.to_vec()).unwrap()
     }
 
-    async fn drop_data(info:RegisterInfo) {
+    async fn drop_data(info: RegisterInfo) {
         let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let pool = PgPool::connect(&database_url).await.unwrap(); // 使用 .await 解包 Future
         let _ = sqlx::query_as!(
@@ -338,11 +338,10 @@ WHERE username = $1
             "#,
             info.username,
         )
-            .execute(&pool)
-            .await
-            .unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     }
-
 
     #[tokio::test]
     async fn test_register_user_success() {
@@ -369,28 +368,30 @@ WHERE username = $1
     }
 
     #[tokio::test]
-    async fn test_register_user_failed(){
-        let app =create_test_app().await;
+    async fn test_register_user_failed() {
+        let app = create_test_app().await;
         let register_info = RegisterInfo {
             username: "test_2".to_string(),
             email: "test_2@example.com".to_string(),
             password: "p2025test2".to_string(),
             confirm_password: "p2025test2".to_string(),
         };
-        let response =app
+        let response = app
             .oneshot(
                 Request::builder()
                     .uri("/api/register")
                     .method("POST")
-                    .header("Content-Type","application/json")
+                    .header("Content-Type", "application/json")
                     .body(Body::from(serde_json::to_string(&register_info).unwrap()))
                     .unwrap(),
             )
             .await
             .unwrap();
-            assert_eq!(response.status(),StatusCode::BAD_REQUEST);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let html = get_html(response).await;
-        assert_eq!(html, "Validation Error: password: passwords must contain at least one upper case letter");
-
+        assert_eq!(
+            html,
+            "Validation Error: password: passwords must contain at least one upper case letter"
+        );
     }
 }
