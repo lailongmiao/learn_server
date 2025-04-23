@@ -44,15 +44,21 @@ pub enum ServerError {
     JsonRejectionError(#[from] rejection::JsonRejection),
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    message: String,
+}
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
-        let error_response = match self {
+        let (status, message) = match self {
             ServerError::DatabaseError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::ValidationError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::PasswordHashError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            ServerError::JsonRejectionError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ServerError::JsonRejectionError(rejection) => {
+                (rejection.status(), rejection.body_text())
+            }
         };
-        error_response.into_response()
+        (status, Json(ErrorResponse { message })).into_response()
     }
 }
 
@@ -78,7 +84,7 @@ struct RegisterInfo {
     #[validate(length(max = 50))]
     email: String,
     #[validate(length(min = 6))]
-    #[validate(regex(path=*UPPERCASE_RE))]
+    #[validate(regex(path = *UPPERCASE_RE))]
     #[validate(must_match(other = "confirm_password"))]
     password: String,
     #[validate(must_match(other = "password"))]
@@ -90,7 +96,7 @@ struct LoginInfo {
     #[validate(length(min = 3, max = 30,))]
     username: String,
     #[validate(length(min = 6))]
-    #[validate(regex(path=*UPPERCASE_RE))]
+    #[validate(regex(path = *UPPERCASE_RE))]
     password: String,
 }
 
@@ -317,6 +323,7 @@ mod tests {
         let pool = PgPool::connect(&database_url).await.unwrap();
         Router::new()
             .route("/api/register", post(register_user))
+            .route("/api/users/find", post(find_user_by_form))
             .with_state(pool)
     }
 
@@ -343,6 +350,25 @@ WHERE username = $1
         .unwrap();
     }
 
+    async fn create_data() {
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        let _ = sqlx::query_as!(
+            User,
+            r#"
+INSERT INTO users (username,primary_email_address,password,team_id,group_id)
+VALUES ($1,$2,$3,$4,$5)
+            "#,
+            "haoxiangzhou",
+            "haoxiangzhou@example.com",
+            "P2025zhx",
+            Option::<Uuid>::None,
+            Option::<Uuid>::None
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
     #[tokio::test]
     async fn test_register_user_success() {
         let app = create_test_app().await;
@@ -393,5 +419,37 @@ WHERE username = $1
             html,
             "Validation Error: password: passwords must contain at least one upper case letter"
         );
+    }
+
+    #[tokio::test]
+    async fn test_find_user_by_form_success() {
+        create_data().await;
+        let app = create_test_app().await;
+
+        let form_data = format!(
+            "id={}&username=haoxiangzhou&primary_email_address=haoxiangzhou@example.com&password=P2025zhx",
+            Uuid::new_v4()
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users/find")
+                    .method("POST")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(Body::from(form_data))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        drop_data(RegisterInfo {
+            username: "haoxiangzhou".to_string(),
+            email: "haoxiangzhou@example.com".to_string(),
+            password: "P2025zhx".to_string(),
+            confirm_password: "P2025zhx".to_string(),
+        })
+        .await;
     }
 }
