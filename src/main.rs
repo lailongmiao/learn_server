@@ -115,6 +115,12 @@ where
     }
 }
 
+#[derive(Deserialize, Serialize)]
+struct UserQuery {
+    username: String,
+    email: String,
+}
+
 #[tokio::main]
 async fn main() {
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -244,16 +250,17 @@ WHERE group_id = $1
 
 async fn find_user_by_form(
     State(pool): State<PgPool>,
-    Form(user): Form<User>,
+    Form(query): Form<UserQuery>,
 ) -> Result<Json<User>, ServerError> {
     let user = sqlx::query_as!(
         User,
         r#"
 SELECT * 
 FROM users 
-WHERE username=$1
+WHERE username = $1 AND primary_email_address = $2
         "#,
-        user.username,
+        query.username,
+        query.email
     )
     .fetch_one(&pool)
     .await?;
@@ -426,18 +433,13 @@ VALUES ($1,$2,$3,$4,$5)
         create_data().await;
         let app = create_test_app().await;
 
-        let form_data = format!(
-            "id={}&username=haoxiangzhou&primary_email_address=haoxiangzhou@example.com&password=P2025zhx",
-            Uuid::new_v4()
-        );
-
         let response = app
             .oneshot(
                 Request::builder()
                     .uri("/api/users/find")
                     .method("POST")
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(Body::from(form_data))
+                    .body(Body::from("username=haoxiangzhou&email=haoxiangzhou@example.com"))
                     .unwrap(),
             )
             .await
