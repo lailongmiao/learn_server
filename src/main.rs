@@ -42,23 +42,24 @@ pub enum ServerError {
     ValidationError(#[from] validator::ValidationErrors),
     #[error(transparent)]
     JsonRejectionError(#[from] rejection::JsonRejection),
+    #[error(transparent)]
+    FromRejectionError(#[from] rejection::FormRejection),
 }
 
-#[derive(Serialize)]
-struct ErrorResponse {
-    message: String,
-}
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
+        match self {
             ServerError::DatabaseError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::ValidationError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::PasswordHashError(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ServerError::JsonRejectionError(rejection) => {
                 (rejection.status(), rejection.body_text())
             }
-        };
-        (status, Json(ErrorResponse { message })).into_response()
+            ServerError::FromRejectionError(rejection) => {
+                (rejection.status(), rejection.body_text())
+            }
+        }
+        .into_response()
     }
 }
 
@@ -115,7 +116,21 @@ where
     }
 }
 
-#[derive(Deserialize, Serialize)]
+struct ValidatedForm<T>(pub T);
+impl<T, S> FromRequest<S> for ValidatedForm<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+{
+    type Rejection = ServerError;
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Form(info) = Form::<T>::from_request(req, state).await?;
+        info.validate()?;
+        Ok(ValidatedForm(info))
+    }
+}
+
+#[derive(Deserialize, Serialize, Validate)]
 struct Input {
     username: String,
     email: String,
@@ -253,7 +268,7 @@ WHERE group_id = $1
 
 async fn find_user_by_form(
     State(pool): State<PgPool>,
-    Form(query): Form<Input>,
+    ValidatedForm(query): ValidatedForm<Input>,
 ) -> Result<Json<User>, ServerError> {
     let user = sqlx::query_as!(
         User,
@@ -422,7 +437,7 @@ VALUES ($1,$2,$3,$4,$5)
         let html = get_html(response).await;
         assert_eq!(
             html,
-            "Validation Error: password: passwords must contain at least one upper case letter"
+            "password: Validation error: regex [{\"value\": String(\"p2025test2\")}]"
         );
     }
 
