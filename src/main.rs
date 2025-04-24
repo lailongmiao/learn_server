@@ -116,7 +116,7 @@ where
 }
 
 #[derive(Deserialize, Serialize)]
-struct UserQuery {
+struct Input {
     username: String,
     email: String,
 }
@@ -132,7 +132,16 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let app = Router::new()
+    let app = app(pool).layer(cors);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await
+        .unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+
+fn app(pool: PgPool) -> Router {
+    Router::new()
         .route("/api/users", get(get_users))
         .route("/api/teams", get(get_teams))
         .route("/api/teams/{team_id}/users", get(get_users_by_team_id_path))
@@ -143,12 +152,6 @@ async fn main() {
         .route("/api/register", post(register_user))
         .route("/api/login", post(login_user))
         .with_state(pool)
-        .layer(cors);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await
-        .unwrap();
-    axum::serve(listener, app).await.unwrap();
 }
 
 async fn get_users(State(pool): State<PgPool>) -> Result<Json<Vec<User>>, ServerError> {
@@ -250,7 +253,7 @@ WHERE group_id = $1
 
 async fn find_user_by_form(
     State(pool): State<PgPool>,
-    Form(query): Form<UserQuery>,
+    Form(query): Form<Input>,
 ) -> Result<Json<User>, ServerError> {
     let user = sqlx::query_as!(
         User,
@@ -325,15 +328,6 @@ mod tests {
     use sqlx::postgres::PgPool;
     use tower::ServiceExt;
 
-    async fn create_test_app() -> Router {
-        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let pool = PgPool::connect(&database_url).await.unwrap();
-        Router::new()
-            .route("/api/register", post(register_user))
-            .route("/api/users/find", post(find_user_by_form))
-            .with_state(pool)
-    }
-
     async fn get_html(response: Response<Body>) -> String {
         let body = response.into_body();
         let collected = body.collect().await.unwrap();
@@ -378,7 +372,9 @@ VALUES ($1,$2,$3,$4,$5)
     }
     #[tokio::test]
     async fn test_register_user_success() {
-        let app = create_test_app().await;
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        let app = app(pool);
         let register_info = RegisterInfo {
             username: "haoxiangzhou".to_string(),
             email: "haoxiangzhou@example.com".to_string(),
@@ -402,7 +398,9 @@ VALUES ($1,$2,$3,$4,$5)
 
     #[tokio::test]
     async fn test_register_user_failed() {
-        let app = create_test_app().await;
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        let app = app(pool);
         let register_info = RegisterInfo {
             username: "test_2".to_string(),
             email: "test_2@example.com".to_string(),
@@ -431,7 +429,9 @@ VALUES ($1,$2,$3,$4,$5)
     #[tokio::test]
     async fn test_find_user_by_form_success() {
         create_data().await;
-        let app = create_test_app().await;
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let pool = PgPool::connect(&database_url).await.unwrap();
+        let app = app(pool);
 
         let response = app
             .oneshot(
@@ -439,7 +439,9 @@ VALUES ($1,$2,$3,$4,$5)
                     .uri("/api/users/find")
                     .method("POST")
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .body(Body::from("username=haoxiangzhou&email=haoxiangzhou@example.com"))
+                    .body(Body::from(
+                        "username=haoxiangzhou&email=haoxiangzhou@example.com",
+                    ))
                     .unwrap(),
             )
             .await
